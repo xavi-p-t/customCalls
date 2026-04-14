@@ -4,6 +4,7 @@ import 'package:bxdrive/conection.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:bxdrive/widgetRedirect.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:bxdrive/ollama_service.dart';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 
@@ -21,6 +22,11 @@ class MenuArchivosState extends State<MenuArchivos> {
   List<Map<String, String>> files = [];
   Map<int, bool> hoverStates = {};
   bool _isServerDetected = false;
+  final OllamaService _ollamaService = OllamaService();
+  List<Map<String, String>> chatMessages = []; // Para guardar el historial
+  bool _isTyping = false;
+  // Controlador para el campo de texto de la IA
+  final TextEditingController _iaController = TextEditingController();
 
   @override
   void initState() {
@@ -55,21 +61,12 @@ class MenuArchivosState extends State<MenuArchivos> {
   }
 
   void _goBack() {
-    // Normaliza la ruta asegurando que usa '/'
     String normalizedPath = currentPath.replaceAll('\\', '/');
-
-    print("Ruta actual antes de retroceder: $normalizedPath");
-
     if (normalizedPath != "/") {
       String parentPath = p.posix.dirname(normalizedPath);
-
-      // Asegurar que la raíz sea '/' y no quede vacía
       if (parentPath == "." || parentPath.isEmpty) {
         parentPath = "/";
       }
-
-      print("Retrocediendo a: $parentPath");
-
       setState(() {
         currentPath = parentPath;
         _listFiles();
@@ -125,7 +122,7 @@ class MenuArchivosState extends State<MenuArchivos> {
       print("Error verificando el servidor: $e");
       return false;
     }
-}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -148,125 +145,174 @@ class MenuArchivosState extends State<MenuArchivos> {
           ),
         ],
       ),
-      body: Column(
+      body: Row( // <-- Añadido Row para dividir archivos y chat
         children: [
-          // Widget para controlar el servidor si hay uno en la carpeta
-          ServerControlWidget(
-            serverPath: currentPath,
-            connectionManager: widget.connection,
-            onServerStateChanged: (serverInfo) async {
-              bool isRunning = await isServerRunning();
-              
-              setState(() {
-                _isServerDetected = isRunning;
-              });
-              print('$_isServerDetected');
-            },
-          ),
-          if (_isServerDetected)
-            PortRedirectWidget(connection: widget.connection),
+          // PARTE IZQUIERDA: Tu lógica original de archivos
           Expanded(
-            // <--- Corrección: "Expanded" con mayúscula
-            child: files.isEmpty
-                ? const Center(child: CircularProgressIndicator())
-                : ListView.builder(
-                    itemCount: files.length,
-                    itemBuilder: (context, index) {
-                      String name = files[index]["name"] ?? "Desconocido";
-                      bool isDirectory = files[index]["type"] == "directory";
+            flex: 3,
+            child: Column(
+              children: [
+                ServerControlWidget(
+                  serverPath: currentPath,
+                  connectionManager: widget.connection,
+                  onServerStateChanged: (serverInfo) async {
+                    bool isRunning = await isServerRunning();
+                    setState(() {
+                      _isServerDetected = isRunning;
+                    });
+                  },
+                ),
+                if (_isServerDetected)
+                  PortRedirectWidget(connection: widget.connection),
+                Expanded(
+                  child: files.isEmpty
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView.builder(
+                          itemCount: files.length,
+                          itemBuilder: (context, index) {
+                            String name = files[index]["name"] ?? "Desconocido";
+                            bool isDirectory = files[index]["type"] == "directory";
 
-                      return MouseRegion(
-                        onEnter: (_) =>
-                            setState(() => hoverStates[index] = true),
-                        onExit: (_) =>
-                            setState(() => hoverStates[index] = false),
-                        child: Container(
-                          color: hoverStates[index] ?? false
-                              ? Colors.grey.shade200
-                              : Colors.transparent,
-                          child: ListTile(
-                            leading: Icon(
-                              isDirectory
-                                  ? Icons.folder
-                                  : Icons.insert_drive_file,
-                              color: isDirectory ? Colors.blue : Colors.grey,
-                            ),
-                            title: Text(
-                              name,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            onTap: isDirectory
-                                ? () => _changeDirectory("$currentPath/$name")
-                                : null,
-                            trailing: hoverStates[index] ?? false
-                                ? Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (!isDirectory) ...[
-                                        IconButton(
-                                          icon: const Icon(Icons.download),
-                                          onPressed: () => _downloadFile(name),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.edit),
-                                          onPressed: () => _renameFile(name),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.delete),
-                                          onPressed: () => _deleteFile(name),
-                                        ),
-                                      ],
-                                    ],
-                                  )
-                                : null,
+                            return MouseRegion(
+                              onEnter: (_) => setState(() => hoverStates[index] = true),
+                              onExit: (_) => setState(() => hoverStates[index] = false),
+                              child: Container(
+                                color: hoverStates[index] ?? false
+                                    ? Colors.grey.shade200
+                                    : Colors.transparent,
+                                child: ListTile(
+                                  leading: Icon(
+                                    isDirectory ? Icons.folder : Icons.insert_drive_file,
+                                    color: isDirectory ? Colors.blue : Colors.grey,
+                                  ),
+                                  title: Text(
+                                    name,
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  onTap: isDirectory
+                                      ? () => _changeDirectory("$currentPath/$name")
+                                      : null,
+                                  trailing: hoverStates[index] ?? false
+                                      ? Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            if (!isDirectory) ...[
+                                              IconButton(
+                                                icon: const Icon(Icons.download),
+                                                onPressed: () => _downloadFile(name),
+                                              ),
+                                              IconButton(
+                                                icon: const Icon(Icons.edit),
+                                                onPressed: () => _renameFile(name),
+                                              ),
+                                              IconButton(
+                                                icon: const Icon(Icons.delete),
+                                                onPressed: () => _deleteFile(name),
+                                              ),
+                                            ],
+                                          ],
+                                        )
+                                      : null,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+          
+          // PARTE DERECHA: Barra lateral de la IA
+          const VerticalDivider(width: 1, thickness: 1),
+          Container(
+            width: 300,
+            color: Colors.grey.shade50,
+            child: Column(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    "Asistente IA",
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ),
+                const Expanded(
+                  child: Center(
+                    child: Text(
+                      "Chat con Ollama",
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _iaController,
+                          decoration: const InputDecoration(
+                            hintText: "Pregunta algo...",
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 10),
                           ),
                         ),
-                      );
-                    },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.send, color: Colors.blue),
+                        onPressed: () {
+                          // Lógica para enviar a Ollama
+                          print("Enviando: ${_iaController.text}");
+                          _iaController.clear();
+                        },
+                      ),
+                    ],
                   ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
+
   Future<void> _renameFile(String oldName) async {
-  TextEditingController _controller = TextEditingController(text: oldName);
-
-  await showDialog(
-    context: context,
-    builder: (context) {
-      return AlertDialog(
-        title: const Text("Cambiar nombre"),
-        content: TextField(
-          controller: _controller,
-          decoration: const InputDecoration(labelText: "Nuevo nombre"),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text("Cancelar"),
+    TextEditingController _controller = TextEditingController(text: oldName);
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("Cambiar nombre"),
+          content: TextField(
+            controller: _controller,
+            decoration: const InputDecoration(labelText: "Nuevo nombre"),
           ),
-          TextButton(
-            onPressed: () async {
-              String newName = _controller.text.trim();
-              if (newName.isNotEmpty && newName != oldName) {
-                try {
-                  await widget.connection.renameFile(
-                      "$currentPath/$oldName", "$currentPath/$newName");
-                  _listFiles(); // Refrescar la lista
-                } catch (e) {
-                  print("Error al renombrar: $e");
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancelar"),
+            ),
+            TextButton(
+              onPressed: () async {
+                String newName = _controller.text.trim();
+                if (newName.isNotEmpty && newName != oldName) {
+                  try {
+                    await widget.connection.renameFile(
+                        "$currentPath/$oldName", "$currentPath/$newName");
+                    _listFiles();
+                  } catch (e) {
+                    print("Error al renombrar: $e");
+                  }
                 }
-              }
-              Navigator.of(context).pop();
-            },
-            child: const Text("Aceptar"),
-          ),
-        ],
-      );
-    },
-  );
-}
-
+                Navigator.of(context).pop();
+              },
+              child: const Text("Aceptar"),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
