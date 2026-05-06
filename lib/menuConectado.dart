@@ -4,8 +4,6 @@ import 'package:bxdrive/menuArchivos.dart';
 import 'package:bxdrive/conection.dart';
 import 'package:bxdrive/almacenamientoView.dart';
 
-
-/// NUEVO: Enum para controlar qué sección está activa
 enum MenuSection {
   almacenamiento,
   archivos,
@@ -22,8 +20,6 @@ class MenuConectado extends StatefulWidget {
 
 class _MenuConectadoState extends State<MenuConectado> {
   final GlobalKey<MenuArchivosState> _menuArchivosKey = GlobalKey();
-
-  /// NUEVO: sección seleccionada (por defecto: Almacenamiento)
   MenuSection selectedSection = MenuSection.almacenamiento;
 
   void _reloadPage() {
@@ -62,7 +58,6 @@ class _MenuConectadoState extends State<MenuConectado> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          /// MENÚ LATERAL
           Container(
             width: large,
             child: Column(
@@ -96,8 +91,6 @@ class _MenuConectadoState extends State<MenuConectado> {
               ],
             ),
           ),
-
-          /// CONTENIDO PRINCIPAL
           Expanded(
             child: _buildContent(),
           ),
@@ -106,8 +99,7 @@ class _MenuConectadoState extends State<MenuConectado> {
     );
   }
 
-  /// NUEVO: decide qué widget mostrar
-  Widget _buildContent() {
+ Widget _buildContent() {
     switch (selectedSection) {
       case MenuSection.almacenamiento:
         return AlmacenamientoView(connection: widget.connection);
@@ -116,12 +108,16 @@ class _MenuConectadoState extends State<MenuConectado> {
         return MenuArchivos(
           key: _menuArchivosKey,
           connection: widget.connection,
+          onNavigateToAlmacenamiento: () {
+            setState(() {
+              selectedSection = MenuSection.almacenamiento;
+            });
+          },
         );
     }
   }
 }
 
-/// MENÚ LATERAL ACTUALIZADO
 class MyList extends StatelessWidget {
   final MenuSection selected;
   final Function(MenuSection) onSelect;

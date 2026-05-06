@@ -19,18 +19,84 @@ class ServerConnectionManager {
 
   SSHClient? _sshClient;
 
+  // --- GESTIÓN DE SERVIDORES CON PM2 ---
+  Future<String> managePm2App(String action, String appName, {String? path, String script = "app.js"}) async {
+    try {
+      // 1. Obtener el estado actual de PM2 en formato JSON
+      final rawOutput = await executeCommand('pm2 jlist');
 
-  //-------------iniciar apagar servidores----------------
+      // Extraemos solo el array JSON (por si la consola imprime otros textos/warnings antes)
+      final startIndex = rawOutput.indexOf('[');
+      final endIndex = rawOutput.lastIndexOf(']') + 1;
 
-  /// INICIAR EL SERVIDOR
+      if (startIndex == -1 || endIndex == 0) {
+        return "No se pudo leer la lista de PM2. Comprueba que PM2 esté instalado.";
+      }
+
+      final jsonString = rawOutput.substring(startIndex, endIndex);
+      final List<dynamic> apps = jsonDecode(jsonString);
+
+      // 2. Buscar si la app ya está en la lista de PM2
+      dynamic existingApp;
+      for (var app in apps) {
+        if (app['name'] == appName) {
+          existingApp = app;
+          break;
+        }
+      }
+
+      String status = existingApp != null ? existingApp['pm2_env']['status'] : 'no_existe';
+
+      // 3. Ejecutar la lógica según la acción
+      switch (action) {
+        case 'añadir':
+          if (existingApp != null) {
+            return "El servidor '$appName' ya existe en PM2 y está $status.";
+          }
+          if (path == null) return "Necesito la ruta para añadir el servidor.";
+          await executeCommand('cd "$path" && pm2 start $script --name "$appName"');
+          return "El servidor '$appName' se ha añadido a PM2 y se está ejecutando.";
+
+        case 'borrar':
+          if (existingApp == null) return "El servidor '$appName' no existe en la lista de PM2.";
+          await executeCommand('pm2 delete "$appName"');
+          return "El servidor '$appName' ha sido borrado de PM2.";
+
+        case 'iniciar':
+          if (existingApp == null) {
+            return "⚠️ El servidor '$appName' NO está en la lista de PM2. Debes añadirlo primero.";
+          }
+          if (status == 'online') {
+            return "✅ El servidor '$appName' ya estaba encendido y funcionando.";
+          }
+          await executeCommand('pm2 start "$appName"');
+          return "🚀 El servidor '$appName' se ha iniciado correctamente.";
+
+        case 'detener':
+          if (existingApp == null) return "El servidor '$appName' no existe en PM2.";
+          if (status != 'online') return "El servidor '$appName' ya estaba detenido.";
+          await executeCommand('pm2 stop "$appName"');
+          return "🛑 El servidor '$appName' se ha detenido.";
+
+        case 'estado':
+          if (existingApp == null) return "El servidor '$appName' no existe en PM2.";
+          return "ℹ️ El servidor '$appName' está actualmente: $status.";
+
+        default:
+          return "Acción no reconocida.";
+      }
+    } catch (e) {
+      return "Error ejecutando PM2: $e";
+    }
+  }
+
+  //-------------iniciar apagar servidores (MÉTODOS ANTIGUOS)----------------
   Future<void> startServer(String remotePath, String type) async {
     String command = '';
     
     if (type == 'node') {
-      // Si es Node, asumimos que se lanza con npm start o node server.js
       command = 'cd $remotePath && nohup npm start > server_log.txt 2>&1 &';
     } else if (type == 'java') {
-      // Si es Java, buscamos el archivo .jar y lo ejecutamos
       command = 'cd $remotePath && nohup java -jar server-package.jar > server_log.txt 2>&1 &';
     }
 
@@ -40,22 +106,17 @@ class ServerConnectionManager {
     }
   }
 
-  /// DETENER EL SERVIDOR
   Future<void> stopServer(int port) async {
-    // El comando fuser busca qué proceso está usando el puerto y lo mata (-k).
     final command = 'fuser -k $port/tcp';
-    
     print('Ejecutando apagado en puerto $port: $command');
     await _sshClient!.execute(command);
   }
 
-  /// REINICIAR EL SERVIDOR
   Future<void> restartServer(String remotePath, String type, int port) async {
     await stopServer(port);
     await Future.delayed(const Duration(seconds: 2)); 
     await startServer(remotePath, type);
   }
-
   //--iniciar apagar servidores FIN
 
   void setConnection(
@@ -97,7 +158,6 @@ class ServerConnectionManager {
     }
   }
 
-  /// Ejecutar un comando en el servidor SSH.
   Future<String> executeCommand(String command) async {
     if (_sshClient == null) {
       throw Exception("SSH Client is not initialized. Call connect() first.");
@@ -113,22 +173,17 @@ class ServerConnectionManager {
     }
   }
 
-  /// Método para listar archivos y directorios remotos
   Future<List<Map<String, String>>> listFiles(String remotePath) async {
     try {
-      // Ejecuta el comando 'ls -l' en el servidor SSH
       final result = await executeCommand('ls -l $remotePath');
-
       final files = <Map<String, String>>[];
 
-      // Procesa cada línea de la salida
       for (var line in result.split('\n')) {
         if (line.isNotEmpty) {
           final parts = line.split(RegExp(r'\s+'));
-          final isDirectory = parts[0].startsWith('d'); // 'd' indica directorio
+          final isDirectory = parts[0].startsWith('d'); 
           final name = parts.last;
 
-          // Añade el archivo o directorio a la lista
           files.add({
             'name': name,
             'type': isDirectory ? 'directory' : 'file',
@@ -145,7 +200,6 @@ class ServerConnectionManager {
 
   Future<void> renameFile(String remotePath, String newName) async {
     try {
-      // Usamos el comando 'mv' para renombrar el archivo o carpeta
       final command = 'mv $remotePath $newName';
       await executeCommand(command);
       print("Archivo o carpeta renombrado a: $newName");
@@ -157,10 +211,9 @@ class ServerConnectionManager {
 
   Future<void> deleteFile(String remotePath) async {
     try {
-      // Usamos el comando 'rm' para eliminar el archivo o 'rm -r' para eliminar un directorio
       final command = remotePath.endsWith('/')
-          ? 'rm -r $remotePath' // Si es un directorio
-          : 'rm $remotePath'; // Si es un archivo
+          ? 'rm -r $remotePath' 
+          : 'rm $remotePath'; 
       await executeCommand(command);
       print("Archivo o carpeta eliminada: $remotePath");
     } catch (e) {
@@ -171,20 +224,11 @@ class ServerConnectionManager {
 
   Future<void> downloadFile(String remotePath, String localPath) async {
     try {
-      // Conexión SFTP
       final sftp = await _sshClient!.sftp();
-
-      // Abrir archivo remoto para lectura
-      final remoteFile =
-          await sftp.open(remotePath, mode: SftpFileOpenMode.read);
-
-      // Crear archivo local para escritura
+      final remoteFile = await sftp.open(remotePath, mode: SftpFileOpenMode.read);
       final localFile = File(localPath);
-
-      // Abrir un Stream de escritura en el archivo local
       final fileSink = localFile.openWrite();
 
-      // Leer el archivo remoto y escribir en el archivo local
       await for (final chunk in remoteFile.read(
         onProgress: (bytesRead) {
           print('Progreso: $bytesRead bytes leídos');
@@ -193,7 +237,6 @@ class ServerConnectionManager {
         fileSink.add(chunk);
       }
 
-      // Cerrar el Sink y el archivo remoto
       await fileSink.close();
       await remoteFile.close();
 
@@ -205,7 +248,6 @@ class ServerConnectionManager {
 
   Future<String> showFileInfo(String remotePath) async {
     try {
-      // Usamos el comando 'ls -l' para obtener detalles del archivo o carpeta
       final result = await executeCommand('ls -l $remotePath');
       print("Información del archivo o carpeta: $result");
       return result;
@@ -215,70 +257,6 @@ class ServerConnectionManager {
     }
   }
 
-  // Future<String> startServer(String serverPath, String serverType) async {
-  //   try {
-  //     final command = '''
-  //   cd $serverPath
-
-  //   # Instalar dependencias para Node.js si es necesario
-  //   if [ "$serverType" = "node" ]; then
-  //     npm install
-  //   fi
-
-  //   # Iniciar el servidor
-  //   if [ "$serverType" = "node" ]; then
-  //     nohup node server.js > output.log 2>&1 &
-  //   elif [ "$serverType" = "java" ]; then
-  //     nohup java -jar server.jar > output.log 2>&1 &
-  //   fi
-
-  //   # Obtener el PID del proceso
-  //   PID=\$(ps aux | grep "$serverType" | grep -v "grep" | awk '{print \$2}')
-  //   echo "Servidor $serverType iniciado con PID \$PID"
-  //   ''';
-
-  //     final result = await executeCommand(command);
-  //     return "Servidor iniciado: $result";
-  //   } catch (e) {
-  //     return "Error iniciando el servidor: $e";
-  //   }
-  // }
-
-  // Future<String> stopServer(int port) async {
-  //   try {
-  //     final command = '''
-  //   # Buscar y detener el proceso en el puerto dado
-  //   PID=\$(lsof -t -i :$port)
-  //   if [ -n "\$PID" ]; then
-  //     kill -9 \$PID
-  //     echo "Servidor en el puerto $port detenido."
-  //   else
-  //     echo "No se encontró un servidor en el puerto $port."
-  //   fi
-  //   ''';
-
-  //     final result = await executeCommand(command);
-  //     return result;
-  //   } catch (e) {
-  //     return "Error deteniendo el servidor: $e";
-  //   }
-  // }
-
-  // Future<String> restartServer(
-  //     String serverPath, String serverType, int port) async {
-  //   try {
-  //     // Detener el servidor
-  //     final stopResult = await stopServer(port);
-
-  //     // Iniciar el servidor
-  //     final startResult = await startServer(serverPath, serverType);
-
-  //     return "Reinicio completado:\n$stopResult\n$startResult";
-  //   } catch (e) {
-  //     return "Error reiniciando el servidor: $e";
-  //   }
-  // }
-
   Future<void> uploadFile(String localPath, String remotePath) async {
     if (_sshClient == null) {
       throw Exception("SSH Client is not initialized. Call connect() first.");
@@ -286,7 +264,6 @@ class ServerConnectionManager {
 
     try {
       final sftp = await _sshClient!.sftp();
-
       final file = File(localPath);
 
       if (!file.existsSync()) {
@@ -372,13 +349,10 @@ class ServerConnectionManager {
     }
   }
 
-  /// Cerrar la conexión SSH.
   Future<void> disconnect() async {
     if (_sshClient != null) {
       _sshClient!.close();
-
       await _sshClient!.done;
-
       _sshClient = null;
       print("Disconnected from the SSH server.");
     } else {
